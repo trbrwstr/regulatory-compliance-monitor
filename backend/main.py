@@ -4,8 +4,13 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from database import init_db, SessionLocal
+from migrations import migrate_schema
 from models import Industry
 from routers import alerts_router, subscriptions_router, sources_router, regulations_router
+from routers.reviews import router as reviews_router
+from routers.data_controls import router as data_controls_router
+from routers.evaluation import router as evaluation_router
+from routers.pilot import router as pilot_router
 from services.scheduler import MonitoringScheduler
 
 
@@ -35,6 +40,7 @@ def seed_industries():
 async def lifespan(app: FastAPI):
     # Startup
     init_db()
+    migrate_schema()
     seed_industries()
     scheduler.start()
     yield
@@ -61,6 +67,10 @@ app.include_router(regulations_router)
 app.include_router(alerts_router)
 app.include_router(subscriptions_router)
 app.include_router(sources_router)
+app.include_router(reviews_router)
+app.include_router(data_controls_router)
+app.include_router(evaluation_router)
+app.include_router(pilot_router)
 
 
 @app.get("/api/health")

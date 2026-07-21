@@ -4,7 +4,8 @@ from sqlalchemy.orm import Session
 from datetime import datetime, timezone
 
 from database import SessionLocal
-from models import RegulatorySource, Regulation, Subscriber, Alert, Industry
+from models import RegulatorySource, Regulation, Subscriber, Alert, Industry, SourceSnapshot, RegulationVersion, Citation
+from services.diffing import normalize_content, content_hash, deterministic_diff
 from scrapers import FederalRegisterScraper, RSSMonitor, StateRegulatoryScraper
 from services.summarizer import RegulationSummarizer
 from services.alerter import AlertService
@@ -121,6 +122,27 @@ class MonitoringScheduler:
                 industry_name = industries[0] if industries else (default_industry or "general")
                 industry = db.query(Industry).filter(Industry.slug == industry_name).first()
 
+                source = db.query(RegulatorySource).filter(RegulatorySource.url == doc.get("source_url", "")).first()
+                if not source and doc.get("source_url"):
+                    source = RegulatorySource(
+                        name=doc.get("feed_name") or doc.get("state") or doc.get("source_type", "source"),
+                        source_type=doc.get("source_type", "unknown"),
+                        url=doc["source_url"],
+                    )
+                    db.add(source)
+                    db.flush()
+
+                source_content = doc.get("raw_content") or doc.get("abstract") or doc.get("title", "")
+                snapshot = SourceSnapshot(
+                    source_id=source.id if source else 0,
+                    content=source_content,
+                    content_type="text/plain",
+                    sha256=content_hash(source_content),
+                ) if source else None
+                if snapshot:
+                    db.add(snapshot)
+                    db.flush()
+
                 # Store regulation
                 regulation = Regulation(
                     title=doc.get("title", ""),
@@ -131,11 +153,31 @@ class MonitoringScheduler:
                     publication_date=datetime.fromisoformat(doc["publication_date"]) if doc.get("publication_date") else None,
                     effective_date=datetime.fromisoformat(doc["effective_date"]) if doc.get("effective_date") else None,
                     source_url=doc.get("source_url", ""),
+                    raw_content=source_content,
+                    source_id=source.id if source else None,
                     industry_id=industry.id if industry else None,
                 )
                 db.add(regulation)
                 db.commit()
                 db.refresh(regulation)
+                if snapshot:
+                    previous = db.query(RegulationVersion).filter(RegulationVersion.regulation_id == regulation.id).order_by(RegulationVersion.version_number.desc()).first()
+                    previous_content = previous.normalized_content if previous else ""
+                    db.add(RegulationVersion(
+                        regulation_id=regulation.id,
+                        snapshot_id=snapshot.id,
+                        version_number=(previous.version_number + 1) if previous else 1,
+                        normalized_content=normalize_content(source_content),
+                        content_hash=content_hash(source_content),
+                        diff_from_previous=deterministic_diff(previous_content, source_content)["unified_diff"] if previous else None,
+                    ))
+                    db.add(Citation(
+                        regulation_id=regulation.id,
+                        snapshot_id=snapshot.id,
+                        location="source abstract or captured content",
+                        quote=source_content[:1000],
+                    ))
+                    db.commit()
 
                 # Alert subscribers
                 await self._notify_subscribers(db, regulation, industry)
@@ -155,13 +197,22 @@ class MonitoringScheduler:
             .all()
         )
 
+        if regulation.status != "approved":
+            return
+
         for subscriber in subscribers:
+            delivery_key = f"regulation:{regulation.id}:subscriber:{subscriber.id}"
+            existing_alert = db.query(Alert).filter(Alert.delivery_key == delivery_key).first()
+            if existing_alert:
+                continue
             alert = Alert(
                 subscriber_id=subscriber.id,
                 regulation_id=regulation.id,
+                delivery_key=delivery_key,
                 delivery_status="pending",
             )
             db.add(alert)
+            db.flush()
 
             result = self.alerter.send_alert(
                 to_email=subscriber.email,

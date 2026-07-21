@@ -1,0 +1,33 @@
+{
+  "fixture_set": "bounded-source-smoke-v1",
+  "seeded": true,
+  "latency_seconds": 42.5,
+  "missing_source_periods": [],
+  "cases": [
+    {
+      "case_id": "source-change-001",
+      "expected_title": "Example agency final rule",
+      "expected_source_url": "https://example.gov/rules/001",
+      "expected_relevant": true,
+      "expected_summary_corrections": 1
+    },
+    {
+      "case_id": "irrelevant-001",
+      "expected_title": "Example agency event notice",
+      "expected_source_url": "https://example.gov/notices/001",
+      "expected_relevant": false
+    }
+  ],
+  "detected": [
+    {
+      "title": "Example agency final rule",
+      "source_url": "https://example.gov/rules/001",
+      "relevance_accepted": true,
+      "summary_corrections": 1,
+      "citation": {
+        "source_url": "https://example.gov/rules/001",
+        "location": "paragraph 2"
+      }
+    }
+  ]
+}
